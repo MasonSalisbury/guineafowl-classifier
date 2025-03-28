@@ -277,12 +277,63 @@
                     const data = await response.json();
                     const eventId = data.event_id;
                     
-                    // Poll for results using the event ID
+                    // Poll for results using the event ID - handling event-stream response
                     const resultResponse = await fetch(`https://masonsalisbury-guineafowlclassifier.hf.space/gradio_api/call/predict/${eventId}`);
-                    const resultData = await resultResponse.json();
+                    
+                    // The response is event-stream, handle it accordingly
+                    const reader = resultResponse.body.getReader();
+                    let resultData = null;
+                    
+                    // Process the streaming response
+                    const processStream = async () => {
+                        let receivedData = "";
+                        
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            
+                            if (done) {
+                                break;
+                            }
+                            
+                            // Convert the binary data to text
+                            const text = new TextDecoder().decode(value);
+                            receivedData += text;
+                            
+                            // Check if we have a complete data event
+                            if (receivedData.includes('data:')) {
+                                const dataLines = receivedData.split('\n\n');
+                                
+                                for (const line of dataLines) {
+                                    if (line.startsWith('data:')) {
+                                        const jsonStr = line.substring(5).trim();
+                                        try {
+                                            const eventData = JSON.parse(jsonStr);
+                                            
+                                            // Check if this is the final result
+                                            if (eventData.status === 'complete' && eventData.data) {
+                                                resultData = eventData;
+                                                return resultData;
+                                            }
+                                        } catch (e) {
+                                            console.log('Not valid JSON yet or heartbeat event');
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        return resultData;
+                    };
+                    
+                    // Wait for the stream processing to complete
+                    const finalResult = await processStream();
                     
                     // Process the result
-                    processResult(resultData);
+                    if (finalResult) {
+                        processResult(finalResult);
+                    } else {
+                        throw new Error('Failed to get result from the API');
+                    }
                     
                 } catch (error) {
                     console.error('Error:', error);
